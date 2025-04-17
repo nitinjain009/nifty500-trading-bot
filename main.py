@@ -170,28 +170,58 @@ def get_stock_data(symbol: str, interval: str = '30m', period: str = '7d', retry
         except Exception as e:
             logger.warning(f"Error reading cache for {symbol}: {e}")
     
-    # Otherwise fetch from Yahoo Finance with retries
-    for attempt in range(retry_count):
-        try:
-            # Add a small random delay to avoid pattern detection
-            time.sleep(random.uniform(0.5, 2.0))
-            
-            logger.info(f"Downloading data for {symbol} (attempt {attempt+1}/{retry_count})")
-            data = yf.download(symbol, interval=interval, period=period, progress=False)
-            
-            if data.empty:
-                logger.warning(f"No data found for {symbol}")
-                time.sleep(2 * (attempt + 1))  # Exponential backoff
-                continue
-                
-            # Cache the data
-            data.to_csv(cache_file)
-            return data
-            
-        except Exception as e:
-            logger.error(f"Error fetching data for {symbol} (attempt {attempt+1}/{retry_count}): {e}")
-            time.sleep(5 * (attempt + 1))  # Longer delay on errors
+    # Browser-like headers to avoid detection
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
     
+    # Try different ticker formats and methods
+    symbol_variants = [
+        symbol,                     # Original format (e.g., "RELIANCE.NS")
+        symbol.replace(".NS", ""),  # Without suffix (e.g., "RELIANCE")
+        f"{symbol.split('.')[0]}.BO" if ".NS" in symbol else symbol  # BSE alternative
+    ]
+    
+    for variant in symbol_variants:
+        for attempt in range(retry_count):
+            try:
+                # Add random delay to avoid pattern detection
+                time.sleep(random.uniform(2.0, 5.0))
+                
+                logger.info(f"Downloading data for {variant} (attempt {attempt+1}/{retry_count})")
+                
+                # Method 1: Use yfinance with custom headers
+                ticker = yf.Ticker(variant)
+                ticker.session.headers.update(headers)  # Set custom headers
+                
+                # Try different intervals if the standard one fails
+                intervals = [interval, '1h', '1d'] if attempt > 0 else [interval]
+                periods = [period, '5d', '30d'] if attempt > 0 else [period]
+                
+                for i in intervals:
+                    for p in periods:
+                        try:
+                            data = ticker.history(interval=i, period=p)
+                            if not data.empty and len(data) > 5:
+                                logger.info(f"Successfully downloaded data for {variant} using interval={i}, period={p}")
+                                # Cache the data
+                                data.to_csv(cache_file)
+                                return data
+                        except Exception:
+                            continue
+                
+                logger.warning(f"No valid data found for {variant} on attempt {attempt+1}")
+                
+            except json.JSONDecodeError:
+                logger.warning(f"JSONDecodeError for {variant} - likely being rate limited")
+                time.sleep(10 * (attempt + 1))  # Much longer delay on JSON errors
+                
+            except Exception as e:
+                logger.error(f"Error fetching data for {variant}: {str(e)}")
+                time.sleep(5 * (attempt + 1))
+    
+    # If we get here, all attempts failed
+    logger.error(f"Failed to retrieve data for {symbol} after all attempts")
     return None
 
 # Generate trading signals
